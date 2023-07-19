@@ -2,6 +2,7 @@ package ratelimiter;
 
 import java.time.LocalDateTime;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * @author: chengfei.feng
@@ -9,7 +10,10 @@ import java.util.concurrent.*;
  * description: 漏桶算法
  */
 public class LeakyBucketRateLimiter {
-    private volatile long nextTime;
+    /**
+     * next time of running out of the bucket;
+     */
+    private volatile AtomicLong nextTime;
 
     /**
      * 流出速率
@@ -29,21 +33,21 @@ public class LeakyBucketRateLimiter {
     private Semaphore lock;
 
     private LeakyBucketRateLimiter() {
-        this.nextTime = System.nanoTime();
+        this.nextTime = new AtomicLong(System.nanoTime());
     }
 
     public static LeakyBucketRateLimiter create(long rate, int capacity) {
         LeakyBucketRateLimiter rateLimiter = new LeakyBucketRateLimiter();
         rateLimiter.rate = rate;
         rateLimiter.capacity = capacity;
-        rateLimiter.lock = new Semaphore(capacity);
+        rateLimiter.lock = new Semaphore(capacity, true);
         rateLimiter.gap = TimeUnit.NANOSECONDS.convert(1, TimeUnit.SECONDS) / rate;
         return rateLimiter;
     }
 
     public boolean tryAcquire() {
         if (lock.tryAcquire()) {
-            boolean res = tryAcquire(1);
+            boolean res = doTryAcquire();
             lock.release();
             return res;
         } else {
@@ -51,12 +55,19 @@ public class LeakyBucketRateLimiter {
         }
     }
 
-    private boolean tryAcquire(int permits) {
+    private boolean doTryAcquire() {
         try {
+            long waitTime;
             synchronized (this) {
-                nextTime += gap;
+                // reset next time
+                if (System.nanoTime() > nextTime.get() + gap * capacity) {
+                    nextTime.set(System.nanoTime());
+                }
+                // the time of wait.
+                waitTime = nextTime.addAndGet(gap) - System.nanoTime();
             }
-            Thread.sleep(TimeUnit.MILLISECONDS.convert(nextTime - System.nanoTime(), TimeUnit.NANOSECONDS));
+
+            TimeUnit.NANOSECONDS.sleep(waitTime);
         } catch (InterruptedException e) {
             return false;
         }
@@ -70,7 +81,7 @@ public class LeakyBucketRateLimiter {
     public static void main(String[] args) {
 
 
-        LeakyBucketRateLimiter counterLimiter = LeakyBucketRateLimiter.create(1L, 2);
+        LeakyBucketRateLimiter counterLimiter = LeakyBucketRateLimiter.create(2L, 2);
         // 线程数
         // 每条线程的执行轮数
         final int turns = 20;
@@ -83,14 +94,14 @@ public class LeakyBucketRateLimiter {
 
                     for (int j = 0; j < turns; j++)
                     {
-
+                        LocalDateTime startTime = LocalDateTime.now();
                         boolean result = counterLimiter.tryAcquire();
                         if (result) {
-                            System.out.println( "thread: ["+Thread.currentThread().getId() + "] success, time: [" + LocalDateTime.now() + " ], " +
-                                    "turn: " + j);
+                            System.out.println( "thread: ["+Thread.currentThread().getId() + "] success, end time: [" + LocalDateTime.now() + " ], startTime: " + startTime);
+                            Thread.sleep(3000);
                         } else {
-                            System.out.println("thread: ["+Thread.currentThread().getId() + "] failed, time: [" + LocalDateTime.now() + "], turn: " + j);
-                            Thread.sleep(1000);
+                            System.out.println("thread: ["+Thread.currentThread().getId() + "] failed, end time: [" + LocalDateTime.now() + "], startTime: " + startTime);
+                            Thread.sleep(3000);
                         }
                     }
 
